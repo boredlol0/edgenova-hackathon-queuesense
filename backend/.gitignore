@@ -1,0 +1,15 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Regenerable artifacts (auto-downloaded / auto-exported on first run)
+yolov8n.pt
+yolov8n_openvino_model/
+queuesense_roi.mp4

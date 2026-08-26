@@ -1,0 +1,11 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "opencv-python>=5.0.0.93",
+    "openvino>=2026.3.0",
+    "ultralytics>=8.4.129",
+]
