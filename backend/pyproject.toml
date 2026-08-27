@@ -5,9 +5,12 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "fastapi>=0.115",
     "huggingface-hub>=0.34.0",
     "opencv-python>=5.0.0.93",
     "openvino>=2026.3.0",
     "scipy>=1.18.1",
     "ultralytics>=8.4.129",
+    "uvicorn[standard]>=0.34",
+    "websockets>=13",
 ]

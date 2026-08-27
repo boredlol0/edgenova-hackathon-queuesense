@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>QueueSense — queue estimator design concept</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap');
+
+:root{
+  --bg:#05070b;
+  --phone-bg:#0b0e16;
+  --glass:rgba(255,255,255,0.06);
+  --glass-border:rgba(255,255,255,0.12);
+  --amber:#ffb454;
+  --teal:#3ddc97;
+  --coral:#ff6b6b;
+  --text:#ffffff;
+  --text-dim:#cfd3e0;
+  --text-faint:#9aa0b4;
+}
+*{box-sizing:border-box; margin:0; padding:0;}
+body{
+  font-family:'Manrope',sans-serif;
+  color:var(--text);
+  background:
+    radial-gradient(circle at 18% 20%, rgba(255,180,84,0.10), transparent 40%),
+    radial-gradient(circle at 82% 75%, rgba(61,220,151,0.10), transparent 42%),
+    var(--bg);
+  padding:64px 32px;
+}
+.stage{ display:flex; flex-wrap:wrap; gap:40px; justify-content:center; align-items:flex-start; }
+.phone{
+  width:300px; height:648px;
+  background:linear-gradient(165deg,#141926,#0a0d15);
+  border-radius:42px; padding:12px;
+  box-shadow:0 40px 80px -30px rgba(0,0,0,0.7), inset 0 0 0 1px rgba(255,255,255,0.05);
+  position:relative;
+}
+.screen{
+  position:relative; width:100%; height:100%;
+  background:var(--phone-bg); border-radius:32px;
+  overflow-y:auto; overflow-x:hidden;
+  padding:22px 18px 18px;
+  display:flex; flex-direction:column;
+  color:var(--text);
+  scrollbar-width:none;
+}
+.screen::-webkit-scrollbar{ display:none; }
+.notch{ position:absolute; top:12px; left:50%; transform:translateX(-50%); width:70px; height:18px; background:#000; border-radius:12px; z-index:5; }
+
+.card{ background:var(--glass); border:1px solid var(--glass-border); border-radius:20px; }
+.dashed{ border-top:1.5px dashed rgba(255,255,255,0.18); }
+.badge{ display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:700; padding:4px 9px; border-radius:999px; }
+.badge.teal{ background:rgba(61,220,151,0.16); color:var(--teal); }
+.badge.coral{ background:rgba(255,107,107,0.16); color:var(--coral); }
+.dot{ width:6px; height:6px; border-radius:50%; }
+
+.navbar{ display:flex; align-items:center; justify-content:space-between; padding-top:16px; margin-top:20px; flex-shrink:0; }
+.navicon{ color:var(--text-faint); width:20px; height:20px; }
+.navicon.active{ color:var(--text); }
+.fab{ width:42px; height:42px; border-radius:14px; background:linear-gradient(150deg,var(--amber),#ff9a3d); display:flex; align-items:center; justify-content:center; color:#3a2606; margin-top:-26px; box-shadow:0 10px 20px -6px rgba(255,150,60,0.5); }
+
+/* splash */
+.splash-screen{ align-items:center; justify-content:center; text-align:center; }
+.logo-mark{ display:flex; gap:10px; margin-bottom:22px; }
+.logo-mark .d{ width:9px; height:9px; border-radius:50%; background:var(--text-faint); align-self:center; }
+.logo-mark .you{ width:20px; height:20px; border-radius:50%; border:2px solid var(--amber); animation:pulse 1.8s ease-in-out infinite; }
+@keyframes pulse{ 0%,100%{box-shadow:0 0 0 0 rgba(255,180,84,0.35);} 50%{box-shadow:0 0 0 8px rgba(255,180,84,0);} }
+.wordmark{ font-family:'JetBrains Mono',monospace; font-size:26px; font-weight:600; letter-spacing:-0.02em; color:var(--text); }
+.tagline{ margin-top:8px; font-size:13px; color:var(--text-dim); }
+.loader{ position:absolute; bottom:46px; left:0; right:0; display:flex; justify-content:center; gap:6px; }
+.loader span{ width:5px; height:5px; border-radius:50%; background:var(--text-faint); }
+.loader span:nth-child(2){ background:var(--amber); }
+
+/* main scroll page */
+.topbar{ display:flex; align-items:center; justify-content:space-between; flex-shrink:0; }
+.brand{ font-family:'JetBrains Mono',monospace; font-weight:700; font-size:15px; color:var(--text); }
+.topbar-icons{ display:flex; align-items:center; gap:10px; }
+.icon-btn{ width:30px; height:30px; border-radius:10px; background:var(--glass); border:1px solid var(--glass-border); display:flex; align-items:center; justify-content:center; color:var(--text); flex-shrink:0; }
+.avatar{ width:30px; height:30px; border-radius:10px; background:linear-gradient(150deg,var(--teal),#1f8f66); }
+.greeting{ margin-top:16px; flex-shrink:0; }
+.greeting .hi{ font-size:12px; color:var(--text-dim); font-weight:600; }
+.greeting .name{ font-size:20px; font-weight:700; margin-top:2px; color:var(--text); }
+
+.ticket{ margin-top:14px; padding:16px; flex-shrink:0; }
+.ticket-top{ display:flex; align-items:center; justify-content:space-between; }
+.ticket-place{ font-size:12px; color:var(--text-dim); font-weight:700; }
+.stat-row{ display:flex; align-items:flex-end; gap:18px; margin-top:14px; }
+.stat-num{ font-family:'JetBrains Mono',monospace; font-size:40px; font-weight:700; line-height:1; color:var(--text); }
+.stat-num.amber{ color:var(--amber); }
+.stat-label{ font-size:12px; color:var(--text-dim); margin-top:6px; font-weight:600; }
+.stat-div{ width:1px; align-self:stretch; background:rgba(255,255,255,0.16); }
+.ticket-foot{ margin-top:14px; padding-top:12px; font-size:11px; color:var(--text-faint); }
+
+.section-label{ font-size:13px; font-weight:700; margin-top:20px; margin-bottom:10px; flex-shrink:0; color:var(--text); }
+.q-row{ display:flex; align-items:center; justify-content:space-between; padding:11px 4px; border-bottom:1px solid rgba(255,255,255,0.08); }
+.q-row:last-child{ border-bottom:none; }
+.q-name{ font-size:13px; font-weight:700; color:var(--text); }
+.q-sub{ font-size:11px; color:var(--text-faint); margin-top:2px; }
+.q-right{ text-align:right; }
+.q-count{ font-family:'JetBrains Mono',monospace; font-size:13px; color:var(--text-dim); }
+
+.metric-row{ display:flex; gap:8px; flex-shrink:0; }
+.metric{ flex:1; padding:12px 10px; }
+.metric .v{ font-family:'JetBrains Mono',monospace; font-size:18px; font-weight:700; color:var(--text); }
+.metric .l{ font-size:10px; color:var(--text-dim); margin-top:4px; font-weight:600; }
+
+.chart-card{ margin-top:12px; padding:14px 14px 6px; flex-shrink:0; }
+.chart-head{ display:flex; justify-content:space-between; align-items:center; }
+.chart-head .t{ font-size:12px; font-weight:700; color:var(--text); }
+.chart-head .avg{ font-size:11px; color:var(--text-dim); }
+.hours{ display:flex; justify-content:space-between; font-size:9px; color:var(--text-faint); margin-top:4px; padding:0 2px; }
+
+.bars-card{ margin-top:12px; padding:14px; flex-shrink:0; }
+.bars{ display:flex; align-items:flex-end; gap:8px; height:56px; margin-top:10px; }
+.bar{ flex:1; background:linear-gradient(180deg,var(--teal),#1f8f66); border-radius:4px 4px 2px 2px; }
+
+.hist-row{ display:flex; justify-content:space-between; align-items:center; padding:9px 2px; border-bottom:1px solid rgba(255,255,255,0.08); }
+.hist-row:last-child{ border-bottom:none; }
+.hist-name{ font-size:12px; font-weight:700; color:var(--text); }
+.hist-date{ font-size:10px; color:var(--text-faint); margin-top:2px; }
+.hist-wait{ font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--text-dim); }
+</style>
+</head>
+<body>
+
+<div class="stage">
+
+  <!-- SPLASH -->
+  <div class="phone"><div class="notch"></div>
+    <div class="screen splash-screen">
+      <div class="logo-mark">
+        <div class="d"></div><div class="d"></div><div class="you"></div><div class="d"></div><div class="d"></div>
+      </div>
+      <div class="wordmark">queuesense</div>
+      <div class="tagline">Know before you go.</div>
+      <div class="loader"><span></span><span></span><span></span></div>
+    </div>
+  </div>
+
+  <!-- SINGLE SCROLLABLE PAGE -->
+  <div class="phone"><div class="notch"></div>
+    <div class="screen">
+      <div class="topbar">
+        <div class="brand">queuesense</div>
+        <div class="topbar-icons">
+          <div class="icon-btn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>
+          </div>
+          <div class="avatar"></div>
+        </div>
+      </div>
+
+      <div class="greeting">
+        <div class="hi">Good afternoon</div>
+        <div class="name">Hey, Maya</div>
+      </div>
+
+      <div class="card ticket">
+        <div class="ticket-top">
+          <div class="ticket-place">Cedar Clinic · Counter 3</div>
+          <div class="badge teal"><span class="dot" style="background:var(--teal)"></span>Live</div>
+        </div>
+        <div class="stat-row">
+          <div>
+            <div class="stat-num amber">14</div>
+            <div class="stat-label">people in queue</div>
+          </div>
+          <div class="stat-div"></div>
+          <div>
+            <div class="stat-num">22</div>
+            <div class="stat-label">est. minutes</div>
+          </div>
+        </div>
+        <div class="ticket-foot dashed">Updated 30 sec ago</div>
+      </div>
+
+      <div class="section-label">Statistics</div>
+
+      <div class="card chart-card">
+        <div class="chart-head"><div class="t">Queue length today</div><div class="avg">avg 16</div></div>
+        <svg viewBox="0 0 264 110" width="100%" height="100" style="margin-top:6px;">
+          <defs>
+            <linearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#ffb454" stop-opacity="0.4"/>
+              <stop offset="100%" stop-color="#ffb454" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <path d="M4,78 C34,60 54,40 84,48 C114,56 134,18 164,26 C194,34 214,66 260,50 L260,104 L4,104 Z" fill="url(#areaFill)"/>
+          <path d="M4,78 C34,60 54,40 84,48 C114,56 134,18 164,26 C194,34 214,66 260,50" fill="none" stroke="#ffb454" stroke-width="2.5" stroke-linecap="round"/>
+        </svg>
+        <div class="hours"><span>9am</span><span>12pm</span><span>3pm</span><span>6pm</span><span>9pm</span></div>
+      </div>
+
+      <div class="card bars-card">
+        <div class="chart-head"><div class="t">Busiest hours</div></div>
+        <div class="bars">
+          <div class="bar" style="height:35%"></div>
+          <div class="bar" style="height:55%"></div>
+          <div class="bar" style="height:40%"></div>
+          <div class="bar" style="height:90%"></div>
+          <div class="bar" style="height:70%"></div>
+          <div class="bar" style="height:48%"></div>
+          <div class="bar" style="height:30%"></div>
+        </div>
+      </div>
+
+      <div class="navbar">
+        <svg class="navicon active" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>
+        <svg class="navicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20V10M12 20V4M20 20v-7"/></svg>
+        <div class="fab">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>
+        </div>
+        <svg class="navicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
+        <svg class="navicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
