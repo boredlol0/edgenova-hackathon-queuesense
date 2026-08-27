@@ -8,5 +8,6 @@ dependencies = [
     "huggingface-hub>=0.34.0",
     "opencv-python>=5.0.0.93",
     "openvino>=2026.3.0",
+    "scipy>=1.18.1",
     "ultralytics>=8.4.129",
 ]
