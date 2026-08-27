@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import time
 
-VIDEO_PATH = "testing.mp4"
+VIDEO_PATH = "test1.mp4"
 
 MODEL_PATH = "yolov8n_openvino_model"
 
@@ -13,12 +13,34 @@ if not Path(MODEL_PATH).exists():
     print("OpenVINO model not found. Exporting from yolov8n.pt (first run only)...")
     YOLO("yolov8n.pt").export(format="openvino", dynamic=False)
 
+# ROI tightly hugging the actual queue lane between the two white barriers
+# (portrait video 1080x1920) - tuned from live frame, see frame_roi_final.jpg
 QUEUE_ROI = np.array([
-    (110, 250),
-    (670, 230),
-    (655, 375),
-    (95, 395)
+    (445, 720),
+    (685, 720),
+    (860, 1385),
+    (340, 1385)
 ], dtype=np.int32)
+
+# --- live cursor / ROI calibration ---
+# mouse_pos updated by mouse callback, shown at cursor
+mouse_pos = [0, 0]
+clicked_points = []  # left-clicks collected for quick ROI copy-paste
+
+def on_mouse(event, x, y, flags, param):
+    global mouse_pos, clicked_points, QUEUE_ROI
+    mouse_pos[0], mouse_pos[1] = x, y
+    if event == cv2.EVENT_LBUTTONDOWN:
+        clicked_points.append((x, y))
+        print(f"[ROI] Click {len(clicked_points)}: ({x}, {y})  |  Current polygon: {clicked_points}")
+        if len(clicked_points) == 4:
+            QUEUE_ROI = np.array(clicked_points, dtype=np.int32)
+            print(f"[ROI] Updated QUEUE_ROI to {clicked_points}")
+            print("      Paste this into QUEUE_ROI or press 'c' to confirm / 'r' to reset")
+    elif event == cv2.EVENT_RBUTTONDOWN:
+        if clicked_points:
+            clicked_points.pop()
+            print(f"[ROI] Undo, remaining: {clicked_points}")
 
 # --- count stability ---
 MIN_HITS_TO_CONFIRM = 5   # frames a track must persist in ROI before counted (~0.2 s)
@@ -36,14 +58,37 @@ fps_video = cap.get(cv2.CAP_PROP_FPS)
 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+# --- output modes ---
+SHOW_LIVE = True   # stream to window as frames are processed (instant feedback)
+SAVE_OUTPUT = True  # keep mp4 write; set False to skip disk I/O on long videos
 OUTPUT_PATH = "queuesense_roi.mp4"
 
-writer = cv2.VideoWriter(
-    OUTPUT_PATH,
-    cv2.VideoWriter_fourcc(*"mp4v"),
-    fps_video,
-    (width, height)
-)
+writer = None
+if SAVE_OUTPUT:
+    writer = cv2.VideoWriter(
+        OUTPUT_PATH,
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps_video,
+        (width, height)
+    )
+
+if SHOW_LIVE:
+    try:
+        # Window sized to video dims, aspect preserved (letterboxed, not stretched).
+        # WINDOW_KEEPRATIO ensures resize keeps aspect; image is never stretched to fill.
+        # For strict 1:1 non-resizable, use WINDOW_AUTOSIZE instead.
+        flags = cv2.WINDOW_NORMAL
+        if hasattr(cv2, "WINDOW_KEEPRATIO"):
+            flags |= cv2.WINDOW_KEEPRATIO
+        if hasattr(cv2, "WINDOW_GUI_EXPANDED"):
+            flags |= cv2.WINDOW_GUI_EXPANDED
+        cv2.namedWindow("QueueSense - Live", flags)
+        # Initial window size = video size (1:1). User can resize, but ratio is kept.
+        cv2.resizeWindow("QueueSense - Live", width, height)
+        cv2.setMouseCallback("QueueSense - Live", on_mouse)
+    except cv2.error as e:
+        print(f"[warn] Live window unavailable ({e}) - continuing without preview")
+        SHOW_LIVE = False
 
 frame_count = 0
 start_time = time.time()
@@ -221,10 +266,61 @@ while True:
         2
     )
 
-    writer.write(frame)
+    # --- cursor coordinate overlay (always on live frame, before write/imshow) ---
+    if SHOW_LIVE:
+        mx, my = mouse_pos
+        # crosshair at cursor
+        if 0 <= mx < width and 0 <= my < height:
+            cv2.drawMarker(frame, (mx, my), (0, 255, 255), markerType=cv2.MARKER_CROSS, markerSize=20, thickness=1)
+            # label next to cursor with background for readability
+            label = f"({mx}, {my})"
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+            lx = min(mx + 12, width - tw - 8)
+            ly = max(my - 12, th + 8)
+            cv2.rectangle(frame, (lx - 4, ly - th - 4), (lx + tw + 4, ly + 4), (0, 0, 0), -1)
+            cv2.putText(frame, label, (lx, ly), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1, cv2.LINE_AA)
+        # help bar at top
+        help_txt = "Hover: coords | Left-click: add ROI point (4=update) | Right-click: undo | r: reset | q/ESC: quit"
+        (htw, hth), _ = cv2.getTextSize(help_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+        cv2.rectangle(frame, (4, 4), (htw + 12, hth + 12), (0, 0, 0), -1)
+        cv2.putText(frame, help_txt, (8, hth + 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        # draw in-progress ROI clicks
+        for i, pt in enumerate(clicked_points):
+            cv2.circle(frame, pt, 5, (0, 255, 0), -1)
+            cv2.putText(frame, f"{i+1}", (pt[0] + 8, pt[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        if len(clicked_points) > 1:
+            cv2.polylines(frame, [np.array(clicked_points, dtype=np.int32)], isClosed=False, color=(0, 255, 0), thickness=2)
+
+    if SAVE_OUTPUT and writer is not None:
+        writer.write(frame)
+
+    # --- livestream to window (no buffering) ---
+    if SHOW_LIVE:
+        cv2.imshow("QueueSense - Live", frame)
+        # waitKey(1) pumps window events; 'q' or ESC to quit early (saves time on long videos)
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q') or key == 27:
+            print(f"\nInterrupted by user at frame {frame_count}")
+            break
+        elif key == ord('r'):
+            clicked_points.clear()
+            print("[ROI] Reset clicked points")
+        elif key == ord('c') and len(clicked_points) == 4:
+            QUEUE_ROI = np.array(clicked_points, dtype=np.int32)
+            print(f"[ROI] Confirmed QUEUE_ROI = {clicked_points}")
+        # if window was closed by user, exit cleanly
+        try:
+            if cv2.getWindowProperty("QueueSense - Live", cv2.WND_PROP_VISIBLE) < 1:
+                print(f"\nWindow closed at frame {frame_count}")
+                break
+        except cv2.error:
+            break
 
 cap.release()
-writer.release()
+if writer is not None:
+    writer.release()
+if SHOW_LIVE:
+    cv2.destroyAllWindows()
 
 count_changes = sum(1 for a, b in zip(count_history, count_history[1:]) if a != b)
 
@@ -235,5 +331,8 @@ print("========================================")
 print(f"Frames processed : {frame_count}")
 print(f"Average FPS      : {current_fps:.2f}")
 print(f"Count changes    : {count_changes} frame-to-frame (lower = stabler)")
-print(f"Output           : {OUTPUT_PATH}")
+if SAVE_OUTPUT:
+    print(f"Output           : {OUTPUT_PATH}")
+else:
+    print(f"Output           : (live only, not saved - set SAVE_OUTPUT=True to write mp4)")
 print("========================================")
