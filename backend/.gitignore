@@ -15,3 +15,5 @@ yolov8n_openvino_model/
 queuesense_roi.mp4
 test1.mp4
 test2.mp4
+irail_crowd_best.pt
+irail_crowd_best_openvino_model

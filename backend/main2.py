@@ -6,12 +6,47 @@ import time
 
 VIDEO_PATH = "test1.mp4"
 
-MODEL_PATH = "yolov8n_openvino_model"
+# --- HF crowd model: AmineSam/irail-crowd-counting-yolov8n (YOLOv8n head detector, imgsz=832) ---
+HF_REPO = "AmineSam/irail-crowd-counting-yolov8n"
+HF_FILENAME = "best.pt"
+CROWD_PT_CACHE = Path("irail_crowd_best.pt")  # local copy after hf download
+# Export creates {stem}_openvino_model, i.e. irail_crowd_best_openvino_model
+MODEL_PATH = "irail_crowd_best_openvino_model"  # OpenVINO export dir (must match YOLO export name)
+# fallback for legacy name if user had old export
+_LEGACY_MODEL_PATH = "irail_crowd_openvino_model"
 
-# First run: download yolov8n.pt and export to OpenVINO
+def get_crowd_pt():
+    """Download best.pt from HF (case-sensitive AmineSam) to local cache if needed."""
+    if CROWD_PT_CACHE.exists():
+        return str(CROWD_PT_CACHE)
+    print(f"Downloading {HF_REPO}/{HF_FILENAME} from Hugging Face...")
+    try:
+        from huggingface_hub import hf_hub_download
+        tmp = hf_hub_download(repo_id=HF_REPO, filename=HF_FILENAME)
+        # copy to local cache for stable export path
+        import shutil
+        shutil.copy(tmp, CROWD_PT_CACHE)
+        print(f"Saved to {CROWD_PT_CACHE}")
+        return str(CROWD_PT_CACHE)
+    except Exception as e:
+        print(f"[error] HF download failed: {e}")
+        print("Try: huggingface-cli login, or check network/token for gated repo")
+        raise
+
+# Ensure PT exists before export
+crowd_pt = get_crowd_pt()
+
+# First run: export crowd model to OpenVINO (CPU) - separate from yolov8n_openvino_model
+# Handle legacy path irail_crowd_openvino_model vs correct irail_crowd_best_openvino_model
+if Path(_LEGACY_MODEL_PATH).exists() and not Path(MODEL_PATH).exists():
+    MODEL_PATH = _LEGACY_MODEL_PATH
 if not Path(MODEL_PATH).exists():
-    print("OpenVINO model not found. Exporting from yolov8n.pt (first run only)...")
-    YOLO("yolov8n.pt").export(format="openvino", dynamic=False)
+    print(f"OpenVINO model not found at {MODEL_PATH}. Exporting {crowd_pt} (first run, ~1-2 min)...")
+    exported = YOLO(crowd_pt).export(format="openvino", dynamic=False)
+    # YOLO.export returns exported dir path - use it if MODEL_PATH mismatched
+    if exported and Path(str(exported)).exists():
+        MODEL_PATH = str(exported)
+    print(f"Export done: {MODEL_PATH}")
 
 # ROI for HEAD-based counting - same lane but top edge raised ~100px
 # so heads (not feet) just inside doorway still count. Tune live via clicks.
@@ -51,7 +86,7 @@ DUP_IOU_THRESH = 0.45     # 0.80->0.45: overlap in dense queue ~0.3-0.5, dedup d
 
 model = YOLO(MODEL_PATH)
 
-print("Model loaded.")
+print(f"Model loaded: {HF_REPO} -> {MODEL_PATH}")
 
 cap = cv2.VideoCapture(VIDEO_PATH)
 
@@ -120,12 +155,16 @@ while True:
     if not ret:
         break
 
+    # Crowd model baseline: imgsz=832, conf=0.25, iou=0.75, max_det=300 per model card
     results = model.track(
         frame,
         persist=True,
         tracker="bytetrack_custom.yaml",
-        classes=[0],          # person only
-        conf=0.18,             # 0.25->0.18: capture low-conf occluded heads
+        classes=[0],          # head only (single class model)
+        conf=0.25,
+        iou=0.75,
+        imgsz=832,
+        max_det=300,
         device="CPU",
         verbose=False
     )
@@ -354,8 +393,9 @@ count_changes = sum(1 for a, b in zip(count_history, count_history[1:]) if a != 
 
 print()
 print("========================================")
-print("        QUEUESENSE ROI TEST")
+print("        QUEUESENSE ROI TEST (CROWD)")
 print("========================================")
+print(f"Model            : {HF_REPO}")
 print(f"Frames processed : {frame_count}")
 print(f"Average FPS      : {current_fps:.2f}")
 print(f"Count changes    : {count_changes} frame-to-frame (lower = stabler)")
