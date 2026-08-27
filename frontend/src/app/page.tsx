@@ -1,6 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import QueueLengthChart, {
+  pushQueueSample,
+  type QueueSample,
+} from "./QueueLengthChart";
 
 const HTTP_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000";
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://127.0.0.1:8000/ws";
@@ -16,6 +20,7 @@ type FrameMsg = {
   serviced_count?: number;
   fps?: number;
   elapsed?: number;
+  count_history?: number[];
 };
 
 export default function Home() {
@@ -35,14 +40,21 @@ export default function Home() {
   const [serviced, setServiced] = useState<number | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [queueHistory, setQueueHistory] = useState<QueueSample[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
-  const [etaOffset, setEtaOffset] = useState(2);
+  const stableEtaUpdatedAtRef = useRef(0);
+  const [stableEta, setStableEta] = useState<number | null>(null);
+  const [stableEtaUpdatedAt, setStableEtaUpdatedAt] = useState<number | null>(null);
+  const [demoBufferMinutes, setDemoBufferMinutes] = useState(2);
+  const [classTime, setClassTime] = useState("");
+  const [currentTime, setCurrentTime] = useState<Date | null>(null);
 
   useEffect(() => {
-    if (eta !== null) {
-      setEtaOffset(Math.random() < 0.5 ? 2 : 3);
-    }
-  }, [eta]);
+    const updateClock = () => setCurrentTime(new Date());
+    updateClock();
+    const interval = window.setInterval(updateClock, 1_000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     const t = setTimeout(() => setShowSplash(false), 1400);
@@ -89,15 +101,35 @@ export default function Home() {
             setIsRunning(true);
             setError(null);
             setLastUpdated(Date.now());
+            setQueueHistory([]);
             return;
           }
           if (msg.type === "frame") {
             if (typeof msg.queue_count === "number") setQueue(msg.queue_count);
-            if (typeof msg.eta_sec === "number" || msg.eta_sec === null) setEta(msg.eta_sec ?? null);
+            if (typeof msg.eta_sec === "number" || msg.eta_sec === null) {
+              const nextEta = msg.eta_sec ?? null;
+              setEta(nextEta);
+              const now = Date.now();
+              if (nextEta === null) {
+                setStableEta(null);
+                setStableEtaUpdatedAt(null);
+                stableEtaUpdatedAtRef.current = 0;
+              } else if (now - stableEtaUpdatedAtRef.current >= 10_000) {
+                // Freeze the ETA for 10 seconds so arrival guidance remains readable.
+                setStableEta(nextEta);
+                setStableEtaUpdatedAt(now);
+                setDemoBufferMinutes(Math.random() < 0.5 ? 2 : 3);
+                stableEtaUpdatedAtRef.current = now;
+              }
+            }
             if (typeof msg.fps === "number") setFps(msg.fps);
             if (typeof msg.avg_service_sec === "number" || msg.avg_service_sec === null) setAvgSvc(msg.avg_service_sec ?? null);
             if (typeof msg.throughput_per_min === "number") setThroughput(msg.throughput_per_min);
             if (typeof msg.serviced_count === "number") setServiced(msg.serviced_count);
+            if (typeof msg.queue_count === "number") {
+              const t = typeof msg.elapsed === "number" ? msg.elapsed : 0;
+              setQueueHistory((prev) => pushQueueSample(prev, t, msg.queue_count as number));
+            }
             setLastUpdated(Date.now());
             return;
           }
@@ -138,12 +170,26 @@ export default function Home() {
     wsRef.current?.send(JSON.stringify({ action: "stop" }));
   };
 
-  const updatedAgo = lastUpdated ? `${Math.max(0, Math.floor((Date.now() - lastUpdated) / 1000))}s ago` : "—";
-  const etaLabel = eta === null ? "calculating..." : eta === 0 ? "0m 0s" : `${Math.floor(eta / 60)}m ${Math.round(eta % 60)}s`;
-  // const etaMinutes = eta === null ? "—" : String(Math.round(eta / 60) + Number((Math.random() + 2).toPrecision(1)));
-  const etaMinutes = eta === null
-  ? "—"
-  : String(Math.round(eta / 60) + etaOffset);
+  const updatedAgo = lastUpdated && currentTime ? `${Math.max(0, Math.floor((currentTime.getTime() - lastUpdated) / 1000))}s ago` : "—";
+  const etaMinutes = eta === null ? "—" : String(Math.ceil(eta / 60) + demoBufferMinutes);
+  const targetClassTime = classTime && currentTime
+    ? (() => {
+        const [hours, minutes] = classTime.split(":").map(Number);
+        const target = new Date(currentTime);
+        target.setHours(hours, minutes, 0, 0);
+        if (target.getTime() < currentTime.getTime()) target.setDate(target.getDate() + 1);
+        return target;
+      })()
+    : null;
+  const plannedEtaSeconds = stableEta !== null ? stableEta + demoBufferMinutes * 60 : null;
+  const liftArrivalTime = targetClassTime && plannedEtaSeconds !== null
+    ? new Date(targetClassTime.getTime() - plannedEtaSeconds * 1000)
+    : null;
+  const formatClockTime = (value: Date) => value.toLocaleTimeString("en-IN", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
   if (showSplash) {
     return (
       <>
@@ -294,6 +340,62 @@ export default function Home() {
 
                 <div
                   style={{
+                    marginTop: 20,
+                    padding: "15px 16px",
+                    borderRadius: 16,
+                    border: "1px solid rgba(255,180,84,0.26)",
+                    background: "rgba(255,180,84,0.07)",
+                  }}
+                >
+                  <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                    <div>
+                      <div style={{ fontSize: 12, color: "#ffcf91", fontWeight: 800, letterSpacing: "0.04em", textTransform: "uppercase" }}>Arrival planner</div>
+                      <div style={{ marginTop: 4, fontSize: 12, color: "#cfd3e0" }}>Need to reach class by?</div>
+                    </div>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#cfd3e0", fontWeight: 700 }}>
+                      Class time
+                      <input
+                        type="time"
+                        value={classTime}
+                        onChange={(event) => setClassTime(event.target.value)}
+                        aria-label="Class arrival time"
+                        style={{
+                          colorScheme: "dark",
+                          background: "rgba(5,7,11,0.7)",
+                          border: "1px solid rgba(255,255,255,0.16)",
+                          borderRadius: 10,
+                          color: "#fff",
+                          fontFamily: "'JetBrains Mono', monospace",
+                          fontSize: 13,
+                          fontWeight: 700,
+                          padding: "8px 10px",
+                          outline: "none",
+                        }}
+                      />
+                    </label>
+                  </div>
+
+                  {classTime && (
+                    <div style={{ marginTop: 14, paddingTop: 13, borderTop: "1px solid rgba(255,255,255,0.1)" }}>
+                      {liftArrivalTime ? (
+                        <>
+                          <div style={{ fontSize: 13, color: "#cfd3e0" }}>To reach class on time, arrive at the lift by</div>
+                          <div style={{ marginTop: 3, fontFamily: "'JetBrains Mono', monospace", fontSize: 24, fontWeight: 800, color: "#ffcf91" }}>
+                            {formatClockTime(liftArrivalTime)}
+                          </div>
+                          <div style={{ marginTop: 5, fontSize: 11, color: "#9aa0b4" }}>
+                            held stable for 10 seconds{stableEtaUpdatedAt ? ` · refreshed ${new Date(stableEtaUpdatedAt).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true })}` : ""}.
+                          </div>
+                        </>
+                      ) : (
+                        <div style={{ fontSize: 12, color: "#9aa0b4" }}>Waiting for enough queue activity to establish a stable ETA.</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div
+                  style={{
                     marginTop: 18,
                     paddingTop: 14,
                     borderTop: "1px dashed rgba(255,255,255,0.14)",
@@ -410,6 +512,8 @@ export default function Home() {
               </div>
             </div>
           </div>
+
+          <QueueLengthChart samples={queueHistory} isRunning={isRunning} />
 
           {/* metrics */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginTop: 16 }}>
